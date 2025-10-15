@@ -1,0 +1,8 @@
+pytorch                   2.5.1 
+python                    3.12.11 
+numpy                     1.26.4 
+transformers              4.49.0 
+peft                      0.15.0 
+pandas                    2.3.2
+scikit-learn              1.7.1 
+  当前环境配置如上
