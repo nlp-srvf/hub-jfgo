@@ -1,0 +1,168 @@
+#coding:utf8
+
+import torch
+import torch.nn as nn
+import numpy as np
+import random
+import json
+
+"""
+
+RNN 位置检测示例：
+判断特定字符（默认“我”）在固定长度文本中的具体位置；若未出现则输出“未出现”类别。
+
+类别数 = sentence_length + 1，其中最后一个类别代表“未出现”。
+
+"""
+
+
+def build_vocab():
+    chars = "你我他defghijklmnopqrstuvwxyz"  # 字符集
+    vocab = {"pad": 0}
+    for index, char in enumerate(chars):
+        vocab[char] = index + 1
+    vocab['unk'] = len(vocab)
+    return vocab
+
+
+class RNNPositionModel(nn.Module):
+    def __init__(self, vector_dim, sentence_length, vocab, hidden_size=64, num_layers=1, bidirectional=True):
+        super(RNNPositionModel, self).__init__()
+        # 字符嵌入层
+        self.embedding = nn.Embedding(len(vocab), vector_dim, padding_idx=0)
+        # RNN 层    
+        self.rnn = nn.GRU(
+            input_size=vector_dim,# 输入维度为字符嵌入维度
+            hidden_size=hidden_size,# 隐藏层维度
+            num_layers=num_layers,# 层数
+            batch_first=True,# 输入为[batch, seq_len, input_size]
+            bidirectional=bidirectional# 是否双向
+        )
+
+
+        out_dim = hidden_size * (2 if bidirectional else 1)
+        self.pos_scorer = nn.Linear(out_dim, 1)  # 每个位置打分
+        self.none_scorer = nn.Linear(out_dim, 1) # 未出现类别打分
+        self.loss = nn.CrossEntropyLoss()# 损失函数，用于分类任务
+
+    # 输入真实标签则返回 loss；否则返回 logits（用于预测）
+    def forward(self, x, y=None):
+        # x: (batch, sen_len)
+        x = self.embedding(x)              # (batch, sen_len, vector_dim)
+        outputs, _ = self.rnn(x)          # outputs: (batch, sen_len, out_dim)
+        pos_logits = self.pos_scorer(outputs).squeeze(-1)  # (batch, sen_len)# 每个位置的打分
+        pooled, _ = torch.max(outputs, dim=1)              # (batch, out_dim)# 对每个时间步的输出取最大值
+        none_logit = self.none_scorer(pooled)              # (batch, 1)# 未出现类别打分
+        logits = torch.cat([pos_logits, none_logit], dim=1)  # (batch, sen_len+1)# 每个位置的打分和未出现类别打分拼接
+        if y is not None:
+            return self.loss(logits, y)  # y: (batch,) 的类别索引
+        else:
+            return logits
+
+
+def build_position_sample(vocab, sentence_length, target_char="我", include_prob=0.7):
+    # 生成一个固定长度的文本样本，随机包含一个目标字符（默认“我”）
+    # 若未包含目标字符，则最后一个类别为“未出现”
+    base_chars = [c for c in vocab.keys() if c not in ("pad", "unk")]
+    # 随机选择字符填充文本样本
+    x_chars = [random.choice(base_chars) for _ in range(sentence_length)]
+    # 随机决定是否包含目标字符
+    if random.random() < include_prob:
+        # 随机选择一个位置插入目标字符
+        pos = random.randrange(sentence_length)
+        
+        x_chars[pos] = target_char
+    y = sentence_length  # 默认未出现
+    for i, ch in enumerate(x_chars):
+        if ch == target_char:
+            y = i
+            break
+    x_ids = [vocab.get(ch, vocab['unk']) for ch in x_chars]# 将字符转换为索引
+    return x_ids, y
+
+
+def build_position_dataset(sample_length, vocab, sentence_length, target_char="我", include_prob=0.7):
+    dataset_x, dataset_y = [] , [] # 初始化数据集
+    for _ in range(sample_length): # 生成样本
+        x, y = build_position_sample(vocab, sentence_length, target_char, include_prob) # 生成样本
+        dataset_x.append(x)
+        dataset_y.append(y)
+    return torch.LongTensor(dataset_x), torch.LongTensor(dataset_y) # 返回数据集
+
+
+def evaluate_position(model, vocab, sentence_length, target_char="我"):
+    model.eval()
+    x, y = build_position_dataset(200, vocab, sentence_length, target_char)
+    correct, wrong = 0, 0
+    with torch.no_grad():
+        logits = model(x)
+        preds = torch.argmax(logits, dim=1) # 预测类别
+        correct = int((preds == y).sum())   # 计算正确预测个数
+        wrong = len(y) - correct # 计算错误预测个数
+    print("位置预测正确个数：%d, 正确率：%f" % (correct, correct/(correct+wrong)))
+    return correct/(correct+wrong)
+
+
+def main_rnn():
+    # 配置参数
+    epoch_num = 10          # 训练轮数
+    batch_size = 32         # 每次训练样本个数
+    train_sample = 640      # 每轮训练总样本数
+    char_dim = 32           # 每个字的维度
+    sentence_length = 6     # 文本长度
+    learning_rate = 3e-3    # 学习率
+    target_char = "我"       # 需要定位的字符
+
+    vocab = build_vocab() # 建立字表
+    model = RNNPositionModel(char_dim, sentence_length, vocab, hidden_size=64, num_layers=1, bidirectional=True) # 建立模型
+    optim = torch.optim.Adam(model.parameters(), lr=learning_rate) # 建立优化器
+
+    for epoch in range(epoch_num):
+        model.train()
+        watch_loss = []
+        for _ in range(int(train_sample / batch_size)):
+            x, y = build_position_dataset(batch_size, vocab, sentence_length, target_char, include_prob=0.7)
+            optim.zero_grad() # 清空梯度
+            loss = model(x, y) # 计算损失
+            loss.backward() # 反向传播
+            optim.step() # 更新参数
+            watch_loss.append(loss.item()) # 记录损失
+        print("=========\n[RNN] 第%d轮平均loss:%f" % (epoch + 1, np.mean(watch_loss)))
+        _ = evaluate_position(model, vocab, sentence_length, target_char)
+
+    torch.save(model.state_dict(), "model_rnn.pth")
+    writer = open("vocab.json", "w", encoding="utf8")
+    writer.write(json.dumps(vocab, ensure_ascii=False, indent=2))
+    writer.close()
+
+    test_strings = ["fnvf我e", "wz你dfg", "rqwdeg", "n我kwww", "abcdef"]
+    predict_position("model_rnn.pth", "vocab.json", test_strings, target_char)
+
+
+def predict_position(model_path, vocab_path, input_strings, target_char="我"):
+    char_dim = 32
+    sentence_length = 6
+    vocab = json.load(open(vocab_path, "r", encoding="utf8"))
+    model = RNNPositionModel(char_dim, sentence_length, vocab, hidden_size=64, num_layers=1, bidirectional=True)
+    model.load_state_dict(torch.load(model_path))
+    x_ids = []
+    for s in input_strings:
+        s = s[:sentence_length]
+        ids = [vocab.get(ch, vocab['unk']) for ch in s]
+        while len(ids) < sentence_length:
+            ids.append(vocab['pad'])
+        x_ids.append(ids)
+    model.eval()
+    with torch.no_grad():
+        logits = model.forward(torch.LongTensor(x_ids))
+        preds = torch.argmax(logits, dim=1).tolist()
+    for i, s in enumerate(input_strings):
+        pos = preds[i]
+        if pos == sentence_length:
+            print("输入：%s, 字符 \"%s\" 未出现" % (s, target_char))
+        else:
+            print("输入：%s, 字符 \"%s\" 预测位置：%d" % (s, target_char, pos))
+
+
+if __name__ == "__main__":
+    main_rnn()
