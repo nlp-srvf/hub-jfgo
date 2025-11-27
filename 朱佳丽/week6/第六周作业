@@ -1,0 +1,225 @@
+#coding:utf8
+
+import torch
+import torch.nn as nn
+import numpy as np
+import math
+import random
+import os
+import re
+
+"""
+基于pytorch的Transformer语言模型
+"""
+
+class PositionalEncoding(nn.Module):
+    """
+    位置编码层，为Transformer提供序列中单词的位置信息。
+    """
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        # 使用对数空间可以防止数值溢出或下溢
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        # register_buffer将其注册为模型的一部分，但不是模型参数，不会被优化器更新
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        # x shape: (seq_len, batch_size, d_model)
+        # 我们的输入是 batch_first=True，所以是 (batch_size, seq_len, d_model)
+        # 因此需要对pe进行调整以匹配x的维度
+        x = x + self.pe[:x.size(1), :].squeeze(1)
+        return self.dropout(x)
+
+
+class TransformerLanguageModel(nn.Module):
+    def __init__(self, input_dim, vocab):
+        super(TransformerLanguageModel, self).__init__()
+        self.vocab_size = len(vocab) + 1
+        self.embedding = nn.Embedding(self.vocab_size, input_dim)
+        
+        # 位置编码
+        # 注意：这里的位置编码 max_len 应该大于或等于你的 window_size
+        self.position_embedding = PositionalEncoding(d_model=input_dim, max_len=100)
+        
+        # 定义Transformer Encoder层
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=input_dim, 
+            nhead=4, # 注意力头数，必须能被input_dim整除
+            batch_first=True # 重要！使输入/输出张量为 (batch, seq_len, dim)
+        )
+        self.layer = nn.TransformerEncoder(encoder_layer, num_layers=2) # 堆叠2层
+        
+        self.classify = nn.Linear(input_dim, self.vocab_size)
+        self.dropout = nn.Dropout(0.1)
+        self.loss = nn.functional.cross_entropy
+
+    def generate_mask(self, size):
+        # 生成一个上三角矩阵，对角线以上都为-inf，用于屏蔽未来信息
+        mask = (torch.triu(torch.ones(size, size)) == 1).transpose(0, 1)
+        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+        return mask
+
+    #当输入真实标签，返回loss值；无真实标签，返回预测值
+    def forward(self, x, y=None):
+        # 生成掩码，适配当前输入的序列长度
+        # 需要将其移动到与x相同的设备（CPU或GPU）
+        mask = self.generate_mask(x.size(1)).to(x.device)
+
+        x = self.embedding(x)  #output shape:(batch_size, sen_len, input_dim)
+        # 注入位置信息
+        x = self.position_embedding(x)
+        # Transformer层需要src_mask来防止看到未来的信息
+        x = self.layer(x, mask)      #output shape:(batch_size, sen_len, input_dim)
+        
+        # 和RNN模型一样，我们只取序列最后一个时间步的输出来做预测
+        x = x[:, -1, :]        #output shape:(batch_size, input_dim)
+        x = self.dropout(x)
+        y_pred = self.classify(x)   #output shape:(batch_size, vocab_size)
+
+        if y is not None:
+            return self.loss(y_pred, y) #[1*vocab_size] []
+        else:
+            return torch.softmax(y_pred, dim=-1)
+
+#==============================================================
+# 以下是原始代码，大部分可以复用，只需修改build_model函数
+#==============================================================
+
+#读取语料获得字符集
+def build_vocab_from_corpus(path):
+    vocab = set()
+    with open(path, encoding="utf8") as f:
+        for index, char in enumerate(f.read()):
+            vocab.add(char)
+    vocab.add("<UNK>") #增加一个unk token用来处理未登录词
+    writer = open("vocab.txt", "w", encoding="utf8")
+    for char in sorted(vocab):
+        writer.write(char + "\n")
+    return vocab
+
+#加载字表
+def build_vocab(vocab_path):
+    vocab = {}
+    with open(vocab_path, encoding="utf8") as f:
+        for index, line in enumerate(f):
+            char = line[:-1]        #去掉结尾换行符
+            vocab[char] = index + 1 #留出0位给pad token
+        # 修复原始代码中的一个小bug："\n"应该有自己的索引，而不是覆盖索引1
+        if "\n" not in vocab:
+             vocab["\n"] = len(vocab) + 1
+    return vocab
+
+#加载语料
+def load_corpus(path):
+    return open(path, encoding="utf8").read()
+
+#随机生成一个样本
+def build_sample(vocab, window_size, corpus):
+    start = random.randint(0, len(corpus) - 1 - window_size)
+    end = start + window_size
+    window = corpus[start:end]
+    target = corpus[end]
+    x = [vocab.get(word, vocab["<UNK>"]) for word in window]
+    y = vocab.get(target, vocab["<UNK>"]) # 目标也可能是不在词表的词
+    return x, y
+
+#建立数据集
+def build_dataset(sample_length, vocab, window_size, corpus):
+    dataset_x = []
+    dataset_y = []
+    for i in range(sample_length):
+        x, y = build_sample(vocab, window_size, corpus)
+        dataset_x.append(x)
+        dataset_y.append(y)
+    return torch.LongTensor(dataset_x), torch.LongTensor(dataset_y)
+
+#建立模型 (***主要修改点***)
+def build_model(vocab, char_dim):
+    # 使用新的Transformer模型
+    model = TransformerLanguageModel(char_dim, vocab)
+    return model
+
+#计算文本ppl (无需修改，因为接口保持一致)
+def calc_perplexity(sentence, model, vocab, window_size):
+    prob = 0
+    model.eval()
+    with torch.no_grad():
+        for i in range(1, len(sentence)):
+            start = max(0, i - window_size)
+            window = sentence[start:i]
+            x = [vocab.get(char, vocab["<UNK>"]) for char in window]
+            x = torch.LongTensor([x])
+            target = sentence[i]
+            target_index = vocab.get(target, vocab["<UNK>"])
+            if torch.cuda.is_available():
+                x = x.cuda()
+            pred_prob_distribute = model(x)[0]
+            target_prob = pred_prob_distribute[target_index]
+            prob += math.log(target_prob, 10)
+    return 2 ** (prob * ( -1 / len(sentence)))
+
+# 训练函数 (无需修改，因为接口保持一致)
+def train(corpus_path, save_weight=True):
+    epoch_num = 10        #训练轮数
+    batch_size = 128       #每次训练样本个数
+    train_sample = 10000   #每轮训练总共训练的样本总数
+    char_dim = 128        #每个字的维度，对于Transformer，即d_model
+    window_size = 6       #样本文本长度
+    
+    # 确保char_dim可以被nhead整除
+    # 在TransformerLanguageModel中nhead=4，128 % 4 == 0，所以没问题
+    
+    vocab = build_vocab("vocab.txt")       #建立字表
+    corpus = load_corpus(corpus_path)     #加载语料
+    model = build_model(vocab, char_dim)    #建立模型
+    if torch.cuda.is_available():
+        model = model.cuda()
+    optim = torch.optim.Adam(model.parameters(), lr=0.001)   #建立优化器
+    print(f"开始使用Transformer模型训练 {corpus_path}...")
+    for epoch in range(epoch_num):
+        model.train()
+        watch_loss = []
+        for batch in range(int(train_sample / batch_size)):
+            x, y = build_dataset(batch_size, vocab, window_size, corpus) #构建一组训练样本
+            if torch.cuda.is_available():
+                x, y = x.cuda(), y.cuda()
+            optim.zero_grad()    #梯度归零
+            loss = model(x, y)   #计算loss
+            watch_loss.append(loss.item())
+            loss.backward()      #计算梯度
+            optim.step()         #更新权重
+        print("=========\n第%d轮平均loss:%f" % (epoch + 1, np.mean(watch_loss)))
+    if save_weight:
+        if not os.path.exists("model"):
+            os.makedirs("model")
+        base_name = os.path.basename(corpus_path).replace(".txt", "_transformer.pth")
+        model_path = os.path.join("model", base_name)
+        torch.save(model.state_dict(), model_path)
+        print(f"模型已保存至 {model_path}")
+
+#训练corpus文件夹下的所有语料
+def train_all():
+    if not os.path.exists("corpus"):
+        print("错误：'corpus' 文件夹不存在。请创建并放入文本文件。")
+        return
+    for path in os.listdir("corpus"):
+        if path.endswith(".txt"):
+            corpus_path = os.path.join("corpus", path)
+            train(corpus_path)
+
+if __name__ == "__main__":
+    # 首次运行时，需要先根据语料库构建词表
+    # 如果corpus文件夹里有all.txt, 可以取消下面这行的注释来生成vocab.txt
+    # build_vocab_from_corpus("corpus/all.txt")
+    
+    train_all()
+
