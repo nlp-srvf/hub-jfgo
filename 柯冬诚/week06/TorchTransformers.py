@@ -84,10 +84,10 @@ class MultiHeadAttention(nn.Module):
         # 自注意力
         self_output, attention_probs = self.self(hidden_states, attention_mask)
 
-        # 线性层
+        # 线性层 Liner(Attention(Q,K,V))
         attention_output = self.output(self_output)
 
-        # 残差连接和层归一化
+        # 残差连接和层归一化 LayerNorm(Xembedding+ Xattention)
         attention_output = self.LayerNorm(attention_output + hidden_states)
 
         return attention_output, attention_probs
@@ -97,20 +97,22 @@ class MultiHeadAttention(nn.Module):
 class FeedForward(nn.Module):
     def __init__(self, hidden_size, intermediate_size):
         super(FeedForward, self).__init__()
-        self.dense = nn.Linear(hidden_size, intermediate_size)
+        self.linearLayer = nn.Linear(hidden_size, intermediate_size)
         self.activation = nn.GELU()
         self.output = nn.Linear(intermediate_size, hidden_size)
         self.LayerNorm = nn.LayerNorm(hidden_size)
 
     def forward(self, hidden_states):
-        # 中间层
-        intermediate_output = self.dense(hidden_states)
-        intermediate_output = self.intermediate_act_fn(intermediate_output)
+        # 第一个线性层 Liner(x)
+        intermediate_output = self.linearLayer(hidden_states)
 
-        # 输出线性层
+        # gelu激活函数 gelu(Liner(x))
+        intermediate_output = self.activation(intermediate_output)
+
+        # 外层线性层 Liner(gelu(Liner(x)))
         layer_output = self.output(intermediate_output)
 
-        # 残差连接和层归一化
+        # 残差连接和层归一化 LayerNorm(X forward+ Xattention)
         layer_output = self.LayerNorm(layer_output + hidden_states)
 
         return layer_output
