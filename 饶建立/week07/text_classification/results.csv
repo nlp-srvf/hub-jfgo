@@ -1,0 +1,5 @@
+﻿Model,Learning_Rate,acc,time(100条)
+SVM,N/A,0.7649,0.0020s
+RNN,0.001,0.6643,0.0000s
+LSTM,0.001,0.8671,0.0010s
+BERT,2e-05,0.9044,0.2555s
