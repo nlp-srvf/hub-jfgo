@@ -70,6 +70,7 @@ def main(config):
     torch.save(model.state_dict(), model_path)
     return
 
+
 if __name__ == "__main__":
     main(Config)
 
