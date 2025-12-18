@@ -2,7 +2,7 @@
 1.修改模型（传递掩码attention_mask）
 2.使用 BERT tokenizer 编码句子
 3.BERT会添加特殊token（[CLS], [SEP]），但标签序列没有对应的标签。需要调整
-
+ 
 {
 "B-LOCATION": 0,
 "B-ORGANIZATION": 1,
