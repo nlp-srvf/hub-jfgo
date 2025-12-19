@@ -4,6 +4,7 @@
 配置参数信息 - BERT版本
 """
 
+
 Config = {
     "model_path": "model_output",
     "schema_path": "../ner_data/schema.json",
