@@ -12,7 +12,8 @@ from config import Config
 # from evaluate import Evaluator
 from loader import load_data
 from loader import load_vocab
-from model import TorchModel
+from model import LanguageModel
+from transformers import BertTokenizer
 
 logging.basicConfig(level = logging.INFO,format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -44,7 +45,8 @@ def main(config):
         os.mkdir(config["model_path"])
     #加载模型
     logger.info(json.dumps(config, ensure_ascii=False, indent=2))
-    model = TorchModel(config)
+
+    model = LanguageModel(768, 21128, config["bert_path"])
     # 标识是否使用gpu
     cuda_flag = torch.cuda.is_available()
     if cuda_flag:
@@ -54,8 +56,8 @@ def main(config):
     optimizer = choose_optimizer(config, model)
     # 加载训练数据
     train_data = load_data(config["train_data_path"], config, logger)
-    #加载效果测试类
-    vocab = load_vocab(config["bert_path"])
+    # #加载效果测试类
+    # vocab = load_vocab(config["bert_path"])
 
     #训练
     for epoch in range(config["epoch"]):
@@ -65,79 +67,53 @@ def main(config):
             model.cuda()
         logger.info("epoch %d begin" % epoch)
         train_loss = []
-        for index, batch_data in enumerate(train_data):
+        for batch_data in train_data:
             if cuda_flag:
                 batch_data = [d.cuda() for d in batch_data]
-            input_seq, predict_seq,mask = batch_data
+            input_seq, mask ,predict_seq= batch_data
 
-            loss = model(input_seq, predict_seq,mask)
+            loss = model(input_seq,mask,predict_seq)
 
             train_loss.append(float(loss))
             loss.backward()
             optimizer.step()
-            optimizer.zero_grad()
 
         logger.info("epoch average loss: %f" % np.mean(train_loss))
+    tokenizer = BertTokenizer.from_pretrained(config["bert_path"])
     print("=========\n第%d轮平均loss:%f" % (epoch + 1, np.mean(train_loss)))
-    print("美国的花岗岩和牡蛎的奇妙缘分--",generate_sentence("美国的花岗岩和牡蛎的奇妙缘分", model, vocab, window_size,config["output_max_length"]),config["output_max_length"])
-    print("美国大选：川普大获全胜--",generate_sentence("美国大选：川普大获全胜", model, vocab, window_size,config["output_max_length"]),config["output_max_length"])
-    print("艺术品金融如何持续发展--",generate_sentence("艺术品金融如何持续发展？", model, vocab, window_size,config["output_max_length"]),config["output_max_length"])
-    print("各路足坛名人陆续抵达--",generate_sentence("各路足坛名人陆续抵达", model, vocab, window_size,config["output_max_length"]),config["output_max_length"])
+    print(generate_sentence("北京明年拟推工作日半价观看电影", model, tokenizer,config["output_max_length"]))
+    print(generate_sentence("南京一合金厂锅炉发生爆炸", model, tokenizer,config["output_max_length"]))
     model_path = os.path.join(config["model_path"], "epoch_%d.pth" % epoch)
     torch.save(model.state_dict(), model_path)
     return
 
-def generate_sentence1(openings, model, vocab, window_size,max_len):
-    ask_size = len(openings)
-    reverse_vocab = dict((y, x) for x, y in vocab.items())
-    model.eval()
-    with torch.no_grad():
-        x = [vocab.get(char, vocab["[UNK]"]) for char in openings[-window_size:]]
-        x=padding(vocab,x, max_len)
-        x = torch.LongTensor([x])
-        if torch.cuda.is_available():
-            x = x.cuda()
-        y = model(x)[0]
-        # print(y.shape)
-        pred_char = ""
-        for ls in y:
-            index=sampling_strategy(ls)
-            pred_char += reverse_vocab[index]
-    return pred_char[ask_size:]
 
-def generate_sentence(openings, model, vocab, window_size,max_len):
-    ask_size = len(openings)
-    reverse_vocab = dict((y, x) for x, y in vocab.items())
+#文本生成测试代码
+def generate_sentence(openings, model, tokenizer,length):
     model.eval()
+    openings = tokenizer.encode(openings)
     with torch.no_grad():
-        pred_char = ""
-        #生成了换行符，或生成文本超过max_len字则终止迭代
-        while pred_char != "\n" and len(openings) <= max_len:
-            openings += pred_char
-            x = [vocab.get(char, vocab["[UNK]"]) for char in openings[-window_size:]]
-            x = torch.LongTensor([x])
+        #生成文本超过30字则终止迭代
+        while len(openings) <= length:
+            x = torch.LongTensor([openings])
             if torch.cuda.is_available():
                 x = x.cuda()
             y = model(x)[0][-1]
             index = sampling_strategy(y)
-            pred_char = reverse_vocab[index]
+            openings.append(index)
+    return tokenizer.decode(openings)
 
-    return openings[ask_size:]
 def sampling_strategy(prob_distribution):
     if random.random() > 0.1:
         strategy = "greedy"
     else:
         strategy = "sampling"
-
     if strategy == "greedy":
         return int(torch.argmax(prob_distribution))
     elif strategy == "sampling":
         prob_distribution = prob_distribution.cpu().numpy()
         return np.random.choice(list(range(len(prob_distribution))), p=prob_distribution)
-def padding(vocab, input_id, length):
-    input_id = input_id[:length]
-    input_id += [vocab["[PAD]"]] * (length - len(input_id))
-    return input_id
+
 if __name__ == "__main__":
 
     main(Config)
