@@ -1,7 +1,7 @@
 # coding: utf-8
 
 '''
-loader.py：加载数据集，做预处理，为训练做准备
+data_loader.py：加载数据集，做预处理，为训练做准备
 '''
 
 import json
