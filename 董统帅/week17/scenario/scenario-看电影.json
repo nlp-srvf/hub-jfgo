@@ -1,0 +1,20 @@
+[
+{
+"id":"node1",
+"intent":["我要看电影"],
+"slot":["#时间#", "#电影名称#"],
+"response":"为你找到#时间#点的#电影名称#电影",
+"childnode":["node2", "node3"]
+},
+{
+"id":"node2",
+"intent":["来个爆米花"],
+"response":"给你爆米花",
+"childnode":["node3"]
+},
+{
+"id":"node3",
+"intent":["来个可乐"],
+"response":"好的，给你可乐"
+}
+]
